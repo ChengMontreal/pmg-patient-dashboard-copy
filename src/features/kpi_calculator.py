@@ -1,32 +1,21 @@
-# -*- coding: utf-8 -*-
+# Fichier: src/features/kpi_calculator.py
 import pandas as pd
 import numpy as np
-from functools import reduce # 引入reduce来优雅地合并多个dataframe
+from functools import reduce
 from config import KPI_COLUMNS
 
 def calculer_score_ponctualite(jours):
-    """
-    Calcule un score de ponctualité de 0 à 100 basé sur le retard en jours.
-    Une fenêtre "idéale" est définie pour le score maximum.
-    """
-    # Fenêtre idéale: de 7 jours en avance (-7) à 3 jours de retard (+3)
-    if -7 <= jours <= 3:
-        return 100
-    # Pénalité pour le retard (plus sévère)
-    elif jours > 3:
-        # Chaque jour de retard après la fenêtre de grâce coûte 4 points
-        return max(0, 100 - (jours - 3) * 4)
-    # Pénalité pour le renouvellement trop précoce (moins sévère)
-    else: # jours < -7
-        # Chaque jour trop en avance coûte 2 points
-        return max(0, 100 - (abs(jours) - 7) * 2)
+    if -7 <= jours <= 3: return 100
+    elif jours > 3: return max(0, 100 - (jours - 3) * 4)
+    else: return max(0, 100 - (abs(jours) - 7) * 2)
 
-def calculer_kpis(patients, drugs, rx, rx_adj, patient_plans):
+def calculer_kpis(patients, drugs, rx, rx_adj, patient_plans, patient_cnd):
     """
-    Calcule tous les KPIs pour chaque patient, avec tous les KPIs normalisés sur une échelle de 0-100.
+    Calcule tous les KPIs pour chaque patient.
     """
-    # ... (KPI 1, 2, 3, 4 calculations remain the same) ...
-    # --- KPI 1: Score de Ponctualité des Renouvellements ---
+    rx_avec_cout = pd.merge(rx, drugs[['id', 'Cost', 'Fee']], left_on='DrgID', right_on='id', how='left').drop(columns=['id'])
+    
+    # --- KPI 1: Score de Ponctualité ---
     rx_sorted = rx.sort_values(by=['PatID', 'OrigRxNum', 'FillDate'])
     rx_sorted['PrevFillDate'] = rx_sorted.groupby(['PatID', 'OrigRxNum'])['FillDate'].shift(1)
     rx_sorted['PrevDaysSupply'] = rx_sorted.groupby(['PatID', 'OrigRxNum'])['DaysSupply'].shift(1)
@@ -38,90 +27,88 @@ def calculer_kpis(patients, drugs, rx, rx_adj, patient_plans):
     kpi_adherence_ther.rename(columns={'ScorePonctualite': KPI_COLUMNS[0]}, inplace=True)
 
     # --- KPI 2: Taux de Succès des Réclamations ---
-    if not rx_adj.empty:
-        adj_summary = rx_adj.groupby('PatID')['ResultCode'].apply(lambda x: (x == 'APPROVED').sum() / len(x) * 100 if len(x) > 0 else 0).round(0).reset_index()
-        adj_summary.rename(columns={'ResultCode': KPI_COLUMNS[1]}, inplace=True)
-    else:
-        adj_summary = pd.DataFrame(columns=['PatID', KPI_COLUMNS[1]])
+    adj_summary = rx_adj.groupby('PatID')['ResultCode'].apply(lambda x: (x == 'APPROVED').sum() / len(x) * 100 if len(x) > 0 else 0).round(0).reset_index()
+    adj_summary.rename(columns={'ResultCode': KPI_COLUMNS[1]}, inplace=True)
 
-    # --- KPI 3: Complexité Médicale ---
+    # --- KPI 3 & 4: Complexité Médicale & Polypharmacie ---
     un_an_avant = pd.Timestamp.now() - pd.DateOffset(years=1)
     kpi_complexite = rx[rx['FillDate'] > un_an_avant].groupby('PatID')['DrgID'].nunique().reset_index()
     kpi_complexite.rename(columns={'DrgID': KPI_COLUMNS[2]}, inplace=True)
-
-    # --- KPI 4: Polypharmacie ---
+    
     trois_mois_avant = pd.Timestamp.now() - pd.DateOffset(months=3)
     meds_recents = rx[rx['FillDate'] > trois_mois_avant]
     kpi_polypharm_count = meds_recents.groupby('PatID')['DrgID'].nunique().reset_index(name='RecentDrugCount')
     kpi_polypharm_count[KPI_COLUMNS[3]] = (kpi_polypharm_count['RecentDrugCount'] >= 5).astype(int)
     
-    # --- KPI 5: Score de Fardeau Financier (%) (NOUVELLE LOGIQUE DE NORMALISATION) ---
-    kpi_fardeau_financier = pd.DataFrame() # Initialiser un dataframe vide
-    if not rx_adj.empty and not rx.empty:
-        if 'Cost' not in rx.columns:
-            rx['Cost'] = np.random.uniform(20, 150, size=len(rx))
-            rx['Fee'] = 10
-        rx_costs = rx[['RxNum', 'Cost', 'Fee']]
-        rx_adj_costs = pd.merge(rx_adj, rx_costs, on='RxNum', how='left')
-        rx_adj_costs['CoutTotal'] = rx_adj_costs['Cost'] + rx_adj_costs['Fee']
-        if 'PlanPays' not in rx_adj_costs.columns:
-            rx_adj_costs['PlanPays'] = rx_adj_costs.apply(lambda row: row['CoutTotal'] * np.random.uniform(0.7, 1.0) if row['ResultCode'] == 'APPROVED' else 0, axis=1)
-        rx_adj_costs['PartPatient'] = (rx_adj_costs['CoutTotal'] - rx_adj_costs['PlanPays']).clip(lower=0)
-        
-        # Calculer le fardeau moyen en dollars
-        df_burden_dollars = rx_adj_costs.groupby('PatID')['PartPatient'].mean().round(2).reset_index()
-        
-        # --- Transformation en score 0-100 ---
-        PIRE_FARDEAU = 50  # 50$ ou plus = score 0 (pire cas)
-        MEILLEUR_FARDEAU = 0 # 0$ = score 100 (meilleur cas)
-        
-        df_burden_dollars['Score'] = 100 * (PIRE_FARDEAU - df_burden_dollars['PartPatient']) / (PIRE_FARDEAU - MEILLEUR_FARDEAU)
-        df_burden_dollars['Score'] = df_burden_dollars['Score'].clip(0, 100).astype(int)
-        
-        kpi_fardeau_financier = df_burden_dollars[['PatID', 'Score']].copy()
-        kpi_fardeau_financier.rename(columns={'Score': KPI_COLUMNS[4]}, inplace=True)
+    # --- KPI 5: Score de Fardeau Financier ---
+    rx_adj_costs = pd.merge(rx_adj, rx_avec_cout[['RxNum', 'Cost', 'Fee']], on='RxNum', how='left')
+    rx_adj_costs.fillna(0, inplace=True)
+    rx_adj_costs['CoutTotal'] = rx_adj_costs['Cost'] + rx_adj_costs['Fee']
+    rx_adj_costs['PlanPays'] = rx_adj_costs.apply(lambda row: row['CoutTotal'] * np.random.uniform(0.7, 1.0) if row['ResultCode'] == 'APPROVED' else 0, axis=1)
+    rx_adj_costs['PartPatient'] = (rx_adj_costs['CoutTotal'] - rx_adj_costs['PlanPays']).clip(lower=0)
     
-    if kpi_fardeau_financier.empty:
-         kpi_fardeau_financier = pd.DataFrame(columns=['PatID', KPI_COLUMNS[4]])
+    df_burden_dollars = rx_adj_costs.groupby('PatID')['PartPatient'].mean().round(2).reset_index()
+    PIRE_FARDEAU, MEILLEUR_FARDEAU = 50, 0
+    df_burden_dollars['Score'] = 100 * (PIRE_FARDEAU - df_burden_dollars['PartPatient']) / (PIRE_FARDEAU - MEILLEUR_FARDEAU)
+    kpi_fardeau_financier = df_burden_dollars[['PatID', 'Score']].copy()
+    kpi_fardeau_financier.rename(columns={'Score': KPI_COLUMNS[4]}, inplace=True)
+    kpi_fardeau_financier[KPI_COLUMNS[4]] = kpi_fardeau_financier[KPI_COLUMNS[4]].clip(0, 100).astype(int)
+
+    # --- Fusion et finalisation ---
+    df_merged = patients.copy()
+    kpi_dfs_to_merge = [kpi_adherence_ther, adj_summary, kpi_complexite, kpi_polypharm_count[['PatID', KPI_COLUMNS[3]]], kpi_fardeau_financier]
     
-    # ... (La logique de fusion reste la même) ...
-    kpi_dfs = [
-        kpi_adherence_ther,
-        adj_summary,
-        kpi_complexite,
-        kpi_polypharm_count,
-        kpi_fardeau_financier
-    ]
-    df_merged_kpis = reduce(lambda left, right: pd.merge(left, right, on='PatID', how='outer'), kpi_dfs)
-    if 'RecentDrugCount' in df_merged_kpis.columns:
-        df_merged_kpis.drop(columns=['RecentDrugCount'], inplace=True)
-    df = pd.merge(patients, df_merged_kpis, left_on='id', right_on='PatID', how='left')
-    if 'PatID' in df.columns:
-        df.drop(columns=['PatID'], inplace=True)
-    df['age'] = ((pd.Timestamp.now() - df['Birthday']).dt.days / 365.25).astype(int)
-    for col in KPI_COLUMNS:
-        if col in df.columns:
-            if col in [KPI_COLUMNS[2], KPI_COLUMNS[3]]:
-                 df[col] = df[col].fillna(0)
-    final_kpi_cols = [col for col in KPI_COLUMNS if col in df.columns]
+    for kpi_df in kpi_dfs_to_merge:
+        df_merged = pd.merge(df_merged, kpi_df, left_on='id', right_on='PatID', how='left')
+        if 'PatID' in df_merged.columns:
+            df_merged.drop(columns='PatID', inplace=True)
+            
+    df_merged['age'] = ((pd.Timestamp.now() - df_merged['Birthday']).dt.days / 365.25).astype(int)
+    final_kpi_cols = [col for col in KPI_COLUMNS if col in df_merged.columns]
     final_cols = ['id', 'LastName', 'FirstName', 'age'] + final_kpi_cols
-    final_df = df[final_cols].copy()
+    final_df = df_merged[final_cols].copy()
     final_df.rename(columns={'id': 'patient_id'}, inplace=True)
     
+    for col in final_kpi_cols:
+        final_df[col] = final_df[col].fillna(0)
+
     return final_df
 
-def segmenter_patients(df_kpis):
+def segmenter_patients(df_kpis, rx, drugs, patient_cnd):
     """
-    Segmente les patients par groupe d'âge et calcule le profil moyen du groupe.
+    Segmente les patients selon plusieurs dimensions (âge, pathologie, catégorie de médicament)
+    et retourne un dictionnaire de profils moyens.
     """
+    profils_groupes = {}
+    df_kpis_copy = df_kpis.copy()
+
+    # --- 1. Segmentation par Âge ---
     bins = [0, 40, 60, 120] 
     labels = ["<40 ans", "40-60 ans", ">60 ans"]
-    df_kpis['groupe_age'] = pd.cut(df_kpis['age'], bins=bins, labels=labels, right=False)
-    
-    # Créer une copie pour éviter le SettingWithCopyWarning
-    df_kpis_copy = df_kpis.copy()
-    
-    profils_groupes = df_kpis_copy.groupby('groupe_age', observed=False)[KPI_COLUMNS].mean(numeric_only=True).round(2).reset_index()
-    
-    return df_kpis_copy, profils_groupes
+    df_kpis_copy['groupe_age'] = pd.cut(df_kpis_copy['age'], bins=bins, labels=labels, right=False)
+    profils_groupes['Âge'] = df_kpis_copy.groupby('groupe_age', observed=False)[KPI_COLUMNS].mean(numeric_only=True).round(2).reset_index()
 
+    # --- 2. Segmentation par Pathologie ---
+    patient_main_patho = patient_cnd.groupby('PatID')['Code'].agg(lambda x: x.value_counts().index[0]).reset_index()
+    patient_main_patho.rename(columns={'Code': 'pathologie'}, inplace=True)
+    df_kpis_with_patho = pd.merge(df_kpis_copy, patient_main_patho, left_on='patient_id', right_on='PatID', how='left')
+    profils_groupes['Pathologie'] = df_kpis_with_patho.groupby('pathologie')[KPI_COLUMNS].mean(numeric_only=True).round(2).reset_index()
+
+    # --- 3. Segmentation par Catégorie de Médicament ---
+    rx_with_cat = pd.merge(rx, drugs[['id', 'Categorie']], left_on='DrgID', right_on='id', how='left')
+    patient_main_cat = rx_with_cat.groupby('PatID')['Categorie'].agg(lambda x: x.value_counts().index[0]).reset_index()
+    patient_main_cat.rename(columns={'Categorie': 'med_categorie'}, inplace=True)
+    df_kpis_with_cat = pd.merge(df_kpis_copy, patient_main_cat, left_on='patient_id', right_on='PatID', how='left')
+    profils_groupes['Médicament'] = df_kpis_with_cat.groupby('med_categorie')[KPI_COLUMNS].mean(numeric_only=True).round(2).reset_index()
+    
+    # --- Ajout des colonnes de segmentation au dataframe principal ---
+    final_df = pd.merge(df_kpis_copy, patient_main_patho[['PatID', 'pathologie']], left_on='patient_id', right_on='PatID', how='left')
+    final_df = pd.merge(final_df, patient_main_cat[['PatID', 'med_categorie']], left_on='patient_id', right_on='PatID', how='left')
+    # Supprimer les colonnes PatID redondantes après les fusions
+    final_df.drop(columns=['PatID_x', 'PatID_y'], inplace=True, errors='ignore')
+
+    # CORRECTION: Remplacer les NaN uniquement dans les colonnes pertinentes AVANT de retourner le dataframe
+    final_df['pathologie'] = final_df['pathologie'].fillna('N/A')
+    final_df['med_categorie'] = final_df['med_categorie'].fillna('N/A')
+    
+    return final_df, profils_groupes
