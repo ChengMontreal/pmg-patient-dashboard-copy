@@ -71,7 +71,7 @@ Ces deux indicateurs évaluent la complexité médicale du patient.
 
 1.  **Cloner le dépôt**
     ```bash
-    git clone <url-du-repo>
+    git clone https://github.com/ChengMontreal/pmg-patient-dashboard-copy.git
     cd <nom-du-repo>
     ```
 
