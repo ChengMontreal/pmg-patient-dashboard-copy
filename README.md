@@ -6,7 +6,7 @@ Le projet analyse des données de pharmacie simulées pour calculer une série d
 
 ## Aperçu Visuel
 
-![Aperçu du Dashboard](https://i.imgur.com/7xXq070.png)
+![Aperçu du Dashboard](image/pmg_dashboard.png)
 
 ## Fonctionnalités Clés
 
