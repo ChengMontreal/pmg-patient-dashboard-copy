@@ -71,17 +71,19 @@ Ces deux indicateurs évaluent la complexité médicale du patient.
 
 1.  **Cloner le dépôt**
     ```bash
-    git clone <url-du-repo>
-    cd <nom-du-repo>
+    git clone https://github.com/ChengMontreal/pmg-patient-dashboard-copy.git
+    cd pmg-patient-dashboard-copy-repo>
     ```
 
 2.  **Créer un environnement virtuel et installer les dépendances**
     ```bash
-    # Créer et activer un environnement virtuel (recommandé)
-    python -m venv venv
-    source venv/bin/activate  # Sur Windows: venv\Scripts\activate
+    # Créer un nouvel environnement Conda (remplacez 'nom-de-votre-env' par le nom désiré)
+    conda create -n nom-de-votre-env python=3.11.13
 
-    # Installer les librairies requises
+    # Activer l'environnement Conda
+    conda activate nom-de-votre-env
+
+    # Installer les librairies requises à partir du fichier requirements.txt
     pip install -r requirements.txt
     ```
 
